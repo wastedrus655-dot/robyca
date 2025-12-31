@@ -16,7 +16,6 @@ jobs:
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        # Parola simpla
         net user runneradmin Start123
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
@@ -29,14 +28,13 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    - name: Discord Notificare
+    - name: Discord Notificare (START)
       shell: powershell
       run: |
-        # AM SCOS EMOJIS CA SA NU DEA EROARE DE ENCODING
         $msg = @{ content = "RDP ONLINE! `nIP: ${{ env.IP_ADDRESS }} `nUser: runneradmin `nPass: Start123" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    - name: Restaurare si Loop
+    - name: Restaurare si Loop Backup
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
@@ -48,20 +46,31 @@ jobs:
         # Login MEGA
         try {
             mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+            
+            # Creare folder daca nu exista
+            try { mega-mkdir /RDP_Full_Backup } catch { Write-Host "Folder existent" }
+
+            # Restaurare initiala
             mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
             mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
-        } catch { Write-Host "Mega login skip" }
+        } catch { Write-Host "Mega skip initial" }
 
-        # Loop infinit (5 ore)
+        # --- LOOP INFINIT CU NOTIFICARI ---
         $count = 0
         while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
             try {
+                # Stergere si Urcare (Backup)
                 mega-rm -r /RDP_Full_Backup/Desktop
                 mega-rm -r /RDP_Full_Backup/AppData
                 mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
                 mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+                
+                # --- AICI ESTE NOTIFICAREA NOUA (din 5 in 5 minute) ---
+                $alert = @{ content = "[BACKUP] Salvarea nr. $count a fost efectuata cu succes pe MEGA." } | ConvertTo-Json
+                Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
+                
             } catch { Write-Host "Sync skip" }
         }
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
