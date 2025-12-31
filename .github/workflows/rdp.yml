@@ -16,7 +16,7 @@ jobs:
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        # Am pus o parola simpla fara semne speciale ca sa mearga sigur
+        # Parola simpla
         net user runneradmin Start123
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
@@ -29,11 +29,11 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    - name: Discord Notificare (Cu Parola)
+    - name: Discord Notificare
       shell: powershell
       run: |
-        # Aici am adaugat Userul si Parola in mesaj
-        $msg = @{ content = "✅ **RDP ONLINE!** `n📡 IP: ${{ env.IP_ADDRESS }} `n👤 User: runneradmin `n🔑 Pass: Start123" } | ConvertTo-Json
+        # AM SCOS EMOJIS CA SA NU DEA EROARE DE ENCODING
+        $msg = @{ content = "RDP ONLINE! `nIP: ${{ env.IP_ADDRESS }} `nUser: runneradmin `nPass: Start123" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
     - name: Restaurare si Loop
@@ -50,7 +50,7 @@ jobs:
             mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
             mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
             mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
-        } catch { Write-Host "Nu s-a putut conecta la MEGA. Verifică parola." }
+        } catch { Write-Host "Mega login skip" }
 
         # Loop infinit (5 ore)
         $count = 0
