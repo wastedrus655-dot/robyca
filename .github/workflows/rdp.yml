@@ -1,4 +1,4 @@
-name: Windows-RDP-V6-CleanLog
+name: Windows-RDP-V7-FinalWorking
 
 on: [workflow_dispatch]
 
@@ -41,7 +41,6 @@ jobs:
       shell: powershell
       run: |
         $ErrorActionPreference = 'Continue'
-        # Activam MEGA
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
@@ -52,7 +51,6 @@ jobs:
 
         if (Test-Path "C:\FullProfile.7z") {
             Write-Host "Backup gasit! Se dezarhiveaza..."
-            # Extragem in C:\Users (va suprascrie folderul runneradmin)
             & "7z" x "C:\FullProfile.7z" -o"C:\Users\" -aoa -y
             
             $msg = @{ content = "RESTAURARE REUSITA!" } | ConvertTo-Json
@@ -62,7 +60,7 @@ jobs:
         $global:LastExitCode = 0
         exit 0
 
-    # 3. LOOP BACKUP TOTAL (CURATAT DE ERORI)
+    # 3. LOOP BACKUP TOTAL (V5 IMBUNATATIT)
     - name: Loop Backup Total
       shell: powershell
       env:
@@ -81,27 +79,27 @@ jobs:
 
             if (Test-Path "C:\FullProfile.7z") { Remove-Item "C:\FullProfile.7z" -Force }
             
-            # --- SCHIMBARE MAJORA: Excludem TOT ce dadea eroare in log-ul tau ---
-            # Am adaugat excluderi pentru NTUSER, UsrClass, WebCache, History, Cookies etc.
-            & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin" -mx1 -ssw -x!NTUSER.DAT* -x!ntuser.dat* -x!*.lock -x!*.log -xr!AppData\Local\Microsoft\Windows\UsrClass.dat* -xr!AppData\Local\Microsoft\Windows\WebCache -xr!AppData\Local\Temp -xr!AppData\Local\MEGAcmd -xr!AppData\Local\History -xr!AppData\Local\ConnectedDevicesPlatform -xr!AppData\Local\Comms -bso0 -bsp0 2> $null
+            # --- COMANDA CORECTA ---
+            # 1. Am pus inapoi steluta "*" (C:\Users\runneradmin\*) ca sa gaseasca fisierele!
+            # 2. Am pastrat excluderea pentru fisierele blocate (NTUSER)
+            # 3. Am scos "2> $null" ca sa vedem daca apare vreo problema reala
+            & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -ssw -x!NTUSER.DAT* -x!ntuser.dat* -x!*.lock -xr!AppData\Local\Microsoft\Windows\UsrClass.dat* -xr!AppData\Local\Temp -xr!AppData\Local\MEGAcmd
             
             if (Test-Path "C:\FullProfile.7z") {
                 $size = (Get-Item "C:\FullProfile.7z").Length
                 $sizeMB = [math]::Round($size / 1MB, 2)
+                Write-Host "Arhiva creata. Marime: $sizeMB MB"
                 
                 if ($size -gt 1000) {
-                    Write-Host "✅ ARHIVA CREATA CU SUCCES! Marime: $sizeMB MB"
-                    
-                    # Stergem vechiul backup si urcam noul
                     mega-rm /RDP_Full_Backup/FullProfile.7z
                     mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
                     
-                    $alert = @{ content = "✅ [BACKUP REUSIT] Salvarea nr. $count. Marime: $sizeMB MB." } | ConvertTo-Json
+                    $alert = @{ content = "✅ [BACKUP] Salvarea nr. $count reusita ($sizeMB MB)." } | ConvertTo-Json
                     Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
                 } else {
-                   Write-Host "⚠️ Arhiva e goala. Ceva nu a mers la 7zip."
+                   Write-Host "⚠️ Arhiva e goala (Sub 1KB)."
                 }
             } else {
-                Write-Host "⚠️ Fisierul 7z nu a fost creat."
+                Write-Host "⚠️ Fisierul 7z nu a fost creat deloc."
             }
         }
