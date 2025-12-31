@@ -1,0 +1,111 @@
+name: Windows-RDP-Total-Desktop-Sync
+
+on: 
+  workflow_dispatch:
+  repository_dispatch:
+    types: [restart_rdp]
+
+jobs:
+  build:
+    runs-on: windows-2019
+    permissions:
+      contents: write
+      actions: write
+    
+    steps:
+    - name: 1. Checkout
+      uses: actions/checkout@v4
+
+    - name: 2. Incarcare Variabile (.env sau Secrets)
+      shell: powershell
+      run: |
+        # Daca exista un fisier .env (in Codespaces/Local), il incarcam
+        if (Test-Path ".env") {
+            Get-Content .env | Foreach-Object {
+                $name, $value = $_.split('=', 2)
+                if ($name -and $value) {
+                    echo "$name=$value" >> $env:GITHUB_ENV
+                }
+            }
+            Write-Host "✅ Variabile incarcate din .env"
+        } else {
+            # Altfel, folosim secretele din GitHub Actions
+            echo "MEGA_EMAIL=${{ secrets.MEGA_EMAIL }}" >> $env:GITHUB_ENV
+            echo "MEGA_PASSWORD=${{ secrets.MEGA_PASSWORD }}" >> $env:GITHUB_ENV
+            echo "TAILSCALE_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}" >> $env:GITHUB_ENV
+            echo "DISCORD_WEBHOOK=${{ secrets.DISCORD_WEBHOOK }}" >> $env:GITHUB_ENV
+            Write-Host "✅ Variabile incarcate din Secrets"
+        }
+
+    - name: 3. Instalare Nucleu
+      run: |
+        choco install googlechrome discord megacmd tailscale -y
+
+    - name: 4. RESTAURARE DESKTOP & LOGIN MEGA
+      shell: powershell
+      run: |
+        $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if ($megaDir) { $env:PATH += ";$megaDir" }
+
+        # Login folosind variabilele incarcate la pasul 2
+        mega-login "$env:MEGA_EMAIL" "$env:MEGA_PASSWORD"
+        
+        $desktopPath = "C:\Users\runneradmin\Desktop"
+        if (!(Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath }
+        
+        mega-get /RDP_Backup $desktopPath
+        if (Test-Path "Void.exe") { Copy-Item "Void.exe" "$desktopPath\Void.exe" -Force }
+
+    - name: 5. Configurare RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        net user runneradmin ParolaRDP123!
+        Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
+
+    - name: 6. Conectare Tailscale
+      shell: powershell
+      run: |
+        $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+        Start-Service tailscale
+        Start-Sleep -Seconds 5
+        & $tailscaleExe up --authkey="$env:TAILSCALE_KEY" --accept-routes --accept-dns=false
+        $myIp = (& $tailscaleExe ip -4).Trim()
+        echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
+
+    - name: 7. Notificare Discord
+      shell: powershell
+      run: |
+        $msg = @{ content = "🚀 RDP Online! IP: $env:IP_ADDRESS | User: runneradmin | Pass: ParolaRDP123!" } | ConvertTo-Json
+        Invoke-RestMethod -Uri "$env:DISCORD_WEBHOOK" -Method Post -Body $msg -ContentType "application/json"
+
+    - name: 8. LANSARE APLICATII
+      shell: powershell
+      run: |
+        if (Test-Path "C:\Users\runneradmin\Desktop\Void.exe") { Start-Process "C:\Users\runneradmin\Desktop\Void.exe" }
+        $discordExe = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
+        if ($discordExe) { Start-Process $discordExe.FullName -ArgumentList "--disable-gpu", "--no-sandbox" }
+        Start-Process "chrome.exe" -ArgumentList "--no-sandbox"
+
+    - name: 9. LOOP SALVARE & RESTART
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $count = 0
+        while($count -lt 66) {
+            Start-Sleep -Seconds 300
+            $count++
+            
+            $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+            if ($megaDir) { $env:PATH += ";$megaDir" }
+
+            try { 
+                mega-put -c C:\Users\runneradmin\Desktop /RDP_Backup 
+                Write-Host "Sync OK ($count/66)"
+            } catch { 
+                Write-Host "Sync skip" 
+            }
+        }
+        # Comanda finala de restart
+        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
