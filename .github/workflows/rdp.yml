@@ -16,7 +16,8 @@ jobs:
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        net user runneradmin ParolaRDP123!
+        # Am pus o parola simpla fara semne speciale ca sa mearga sigur
+        net user runneradmin Start123
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
     - name: Tailscale
@@ -28,10 +29,11 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    - name: Discord Notificare
+    - name: Discord Notificare (Cu Parola)
       shell: powershell
       run: |
-        $msg = @{ content = "RDP IP: ${{ env.IP_ADDRESS }}" } | ConvertTo-Json
+        # Aici am adaugat Userul si Parola in mesaj
+        $msg = @{ content = "✅ **RDP ONLINE!** `n📡 IP: ${{ env.IP_ADDRESS }} `n👤 User: runneradmin `n🔑 Pass: Start123" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
     - name: Restaurare si Loop
@@ -43,7 +45,7 @@ jobs:
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
-        # Login MEGA (Daca crapa aici, inseamna ca nu ai pus secretele)
+        # Login MEGA
         try {
             mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
             mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
