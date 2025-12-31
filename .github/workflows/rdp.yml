@@ -1,4 +1,4 @@
-name: Windows-RDP-V4-NoWarnings
+name: Windows-RDP-V5-FinalFix
 
 on: [workflow_dispatch]
 
@@ -17,7 +17,6 @@ jobs:
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        # Parola: Start123
         net user runneradmin Start123
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
@@ -42,7 +41,7 @@ jobs:
       shell: powershell
       run: |
         $ErrorActionPreference = 'Continue'
-        # Adaugam MEGA in path
+        # Activam MEGA
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
@@ -53,23 +52,29 @@ jobs:
 
         if (Test-Path "C:\FullProfile.7z") {
             Write-Host "Backup gasit! Se dezarhiveaza..."
-            # Dezarhivam tot
-            & "7z" x "C:\FullProfile.7z" -o"C:\Users\runneradmin\" -aoa -y
+            # Extragem in C:\Users (va suprascrie folderul runneradmin)
+            & "7z" x "C:\FullProfile.7z" -o"C:\Users\" -aoa -y
             
             $msg = @{ content = "RESTAURARE REUSITA!" } | ConvertTo-Json
             Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
         }
         
-        # Orice ar fi, continuam!
         $global:LastExitCode = 0
         exit 0
 
-    # 3. LOOP BACKUP TOTAL (CURATAT DE ERORI)
+    # 3. LOOP BACKUP TOTAL (REPARAT PATH + 7ZIP)
     - name: Loop Backup Total
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        # --- FIX MEGA PATH: Il punem din nou aici ca sa fim siguri ca merge ---
+        $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if ($megaDir) { 
+            $env:PATH += ";$megaDir"
+            Write-Host "MEGA Path setat corect: $megaDir"
+        }
+
         $count = 0
         while($count -lt 300) {
             Start-Sleep -Seconds 600
@@ -79,22 +84,26 @@ jobs:
 
             if (Test-Path "C:\FullProfile.7z") { Remove-Item "C:\FullProfile.7z" -Force }
             
-            # --- MODIFICARE FINALA ---
-            # Excludem fisierele de sistem care dau eroare (NTUSER etc)
-            # "2> $null" ascunde orice text rosu inutil
-            & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -ssw -x!NTUSER.DAT* -x!ntuser.dat* -x!*.lock -xr!AppData\Local\Microsoft\Windows\UsrClass.dat* -xr!AppData\Local\Temp -xr!AppData\Local\MEGAcmd 2> $null
+            # --- FIX 7ZIP: Arhivam folderul intreg, nu cu steluta ---
+            # -ssw = copiaza fisiere blocate
+            # 2> $null = ascunde erorile rosii
+            & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin" -mx1 -ssw -xr!AppData\Local\Temp -xr!AppData\Local\MEGAcmd 2> $null
             
-            # Verificam daca arhiva exista si e mai mare de 0 bytes
             if (Test-Path "C:\FullProfile.7z") {
                 $size = (Get-Item "C:\FullProfile.7z").Length
-                if ($size -gt 0) {
+                Write-Host "Arhiva creata. Marime: $size bytes"
+                
+                if ($size -gt 1000) {
+                    # Stergem vechiul backup folosind calea sigura
                     mega-rm /RDP_Full_Backup/FullProfile.7z
                     mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
                     
                     $alert = @{ content = "[BACKUP] Salvarea nr. $count reusita." } | ConvertTo-Json
                     Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
+                } else {
+                   Write-Host "Arhiva e prea mica (goala), nu o urcam."
                 }
             } else {
-                Write-Host "Backup incomplet, se reincearca data viitoare."
+                Write-Host "Eroare la crearea arhivei."
             }
         }
