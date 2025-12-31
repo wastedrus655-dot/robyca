@@ -1,4 +1,4 @@
-name: Windows-RDP-Total
+name: Windows-RDP-Full-Profile
 
 on: [workflow_dispatch]
 
@@ -9,8 +9,9 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    # 1. Instalam 7zip pentru a putea arhiva/dezarhiva tot profilul rapid
     - name: Instalare Softuri
-      run: choco install googlechrome megacmd tailscale -y
+      run: choco install googlechrome megacmd tailscale 7zip -y
 
     - name: Configurare RDP
       run: |
@@ -31,45 +32,67 @@ jobs:
     - name: Discord Notificare (START)
       shell: powershell
       run: |
-        $msg = @{ content = "RDP ONLINE! `nIP: ${{ env.IP_ADDRESS }} `nUser: runneradmin `nPass: Start123" } | ConvertTo-Json
+        $msg = @{ content = "🔄 **RDP ONLINE!** `nSe încearcă restaurarea profilului complet... `nIP: ${{ env.IP_ADDRESS }} `nPass: Start123" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    - name: Restaurare si Loop Backup
+    # 2. RESTAURARE COMPLETA (Download Arhiva -> Extract peste User)
+    - name: Restaurare Profil
       shell: powershell
-      env:
-        GH_TOKEN: ${{ github.token }}
       run: |
         # Configurare MEGA
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
-        # Login MEGA
         try {
             mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
             
-            # Incercam restaurarea (va da eroare la prima rulare, e ok, o ignoram)
-            mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
-            mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
-        } catch { Write-Host "Mega skip initial" }
+            # Incercam sa descarcam arhiva completa
+            Write-Host "Cautare backup pe MEGA..."
+            mega-get /RDP_Full_Backup/FullProfile.7z C:\FullProfile.7z
+            
+            if (Test-Path "C:\FullProfile.7z") {
+                Write-Host "Backup gasit! Se dezarhiveaza..."
+                # Dezarhivam fortat peste userul curent (-aoa = overwrite all)
+                & "7z" x "C:\FullProfile.7z" -o"C:\Users\runneradmin\" -aoa -y
+                
+                $msg = @{ content = "✅ **RESTAURARE REUȘITĂ!** Profilul tău a fost încărcat." } | ConvertTo-Json
+                Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
+            } else {
+                Write-Host "Nu exista backup inca (Prima rulare)."
+            }
+        } catch { Write-Host "Eroare la restaurare sau prima rulare." }
 
-        # --- LOOP INFINIT ---
+    # 3. LOOP BACKUP TOTAL (Arhivare User -> Upload)
+    - name: Loop Backup Total
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
         $count = 0
         while($count -lt 66) {
-            Start-Sleep -Seconds 300
+            # Facem backup la fiecare 10 minute (fiind arhiva mare, dureaza putin mai mult)
+            Start-Sleep -Seconds 600
             $count++
+            
             try {
-                # Stergere vechituri
-                mega-rm -r /RDP_Full_Backup/Desktop
-                mega-rm -r /RDP_Full_Backup/AppData
+                Write-Host "Incepere backup total nr. $count..."
                 
-                # --- FIX FINAL: Am adaugat "-c" care FORTEAZA crearea folderelor ---
-                mega-put -c C:\Users\runneradmin\Desktop /RDP_Full_Backup/
-                mega-put -c C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+                # Stergem arhiva veche locala daca exista
+                if (Test-Path "C:\FullProfile.7z") { Remove-Item "C:\FullProfile.7z" -Force }
                 
-                # Notificare Discord
-                $alert = @{ content = "[BACKUP] Salvarea nr. $count a fost efectuata cu succes." } | ConvertTo-Json
+                # Arhivam TOT folderul userului, dar excludem fisierele temporare inutile ca sa nu fie uriasa
+                # Excludem: Cache, Temp, si folderul MEGAcmd
+                & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -xr!AppData\Local\Temp -xr!AppData\Local\Microsoft\Windows\INetCache -xr!AppData\Local\MEGAcmd
+                
+                # Stergem backup-ul vechi de pe cloud
+                mega-rm /RDP_Full_Backup/FullProfile.7z
+                
+                # Urcam arhiva noua (-c creeaza folderul daca nu e)
+                mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
+                
+                $alert = @{ content = "💾 [BACKUP TOTAL] Salvarea nr. $count completă (Tot Userul)." } | ConvertTo-Json
                 Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
                 
-            } catch { Write-Host "Sync skip" }
+            } catch { Write-Host "Eroare la backup (posibil fisier deschis)." }
         }
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
