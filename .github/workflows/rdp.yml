@@ -1,4 +1,4 @@
-name: Windows-RDP-V3-ForceBackup
+name: Windows-RDP-V4-NoWarnings
 
 on: [workflow_dispatch]
 
@@ -42,6 +42,7 @@ jobs:
       shell: powershell
       run: |
         $ErrorActionPreference = 'Continue'
+        # Adaugam MEGA in path
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
@@ -52,17 +53,18 @@ jobs:
 
         if (Test-Path "C:\FullProfile.7z") {
             Write-Host "Backup gasit! Se dezarhiveaza..."
+            # Dezarhivam tot
             & "7z" x "C:\FullProfile.7z" -o"C:\Users\runneradmin\" -aoa -y
             
             $msg = @{ content = "RESTAURARE REUSITA!" } | ConvertTo-Json
             Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
         }
         
-        # Fortam succesul la pasul de restaurare
+        # Orice ar fi, continuam!
         $global:LastExitCode = 0
         exit 0
 
-    # 3. LOOP BACKUP TOTAL (MODIFICAT SA IGNORE ERORILE 7ZIP)
+    # 3. LOOP BACKUP TOTAL (CURATAT DE ERORI)
     - name: Loop Backup Total
       shell: powershell
       env:
@@ -73,24 +75,26 @@ jobs:
             Start-Sleep -Seconds 600
             $count++
             
-            # Nu mai folosim TRY/CATCH strict aici, verificam daca fisierul exista
             Write-Host "Incepere backup nr. $count..."
 
             if (Test-Path "C:\FullProfile.7z") { Remove-Item "C:\FullProfile.7z" -Force }
             
-            # --- MODIFICARE IMPORTANTA: -ssw (SnapShot Write) ---
-            # Asta forteaza 7zip sa copieze fisierele blocate (NTUSER.DAT etc)
-            # De asemenea, ignoram erorile (2>) ca sa nu opreasca scriptul
-            & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -ssw -xr!AppData\Local\Temp -xr!AppData\Local\MEGAcmd 2> $null
+            # --- MODIFICARE FINALA ---
+            # Excludem fisierele de sistem care dau eroare (NTUSER etc)
+            # "2> $null" ascunde orice text rosu inutil
+            & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -ssw -x!NTUSER.DAT* -x!ntuser.dat* -x!*.lock -xr!AppData\Local\Microsoft\Windows\UsrClass.dat* -xr!AppData\Local\Temp -xr!AppData\Local\MEGAcmd 2> $null
             
-            # Verificam daca s-a creat arhiva, chiar daca 7zip a dat warning-uri
+            # Verificam daca arhiva exista si e mai mare de 0 bytes
             if (Test-Path "C:\FullProfile.7z") {
-                mega-rm /RDP_Full_Backup/FullProfile.7z
-                mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
-                
-                $alert = @{ content = "[BACKUP] Salvarea nr. $count reusita." } | ConvertTo-Json
-                Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
+                $size = (Get-Item "C:\FullProfile.7z").Length
+                if ($size -gt 0) {
+                    mega-rm /RDP_Full_Backup/FullProfile.7z
+                    mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
+                    
+                    $alert = @{ content = "[BACKUP] Salvarea nr. $count reusita." } | ConvertTo-Json
+                    Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
+                }
             } else {
-                Write-Host "Backup esuat - arhiva nu a fost creata."
+                Write-Host "Backup incomplet, se reincearca data viitoare."
             }
         }
