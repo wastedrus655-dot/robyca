@@ -9,7 +9,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    # 1. Instalam 7zip si unelte
+    # 1. Instalam 7zip si unelte necesare
     - name: Instalare Softuri
       run: choco install googlechrome megacmd tailscale 7zip -y
 
@@ -17,6 +17,7 @@ jobs:
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        # Parola simpla ca sa nu avem probleme la login
         net user runneradmin Start123
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
@@ -29,42 +30,40 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    # AM SCOS EMOJIS SI DIACRITICELE DE AICI
-    - name: Discord Notificare (START)
+    # NOTIFICARE START (Text simplu, fara emojis)
+    - name: Discord Notificare
       shell: powershell
       run: |
-        $msg = @{ content = "RDP ONLINE! `nSe incearca restaurarea profilului complet... `nIP: ${{ env.IP_ADDRESS }} `nPass: Start123" } | ConvertTo-Json
+        $msg = @{ content = "RDP ONLINE! `nSe incearca restaurarea profilului... `nIP: ${{ env.IP_ADDRESS }} `nPass: Start123" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    # 2. RESTAURARE COMPLETA (Download Arhiva -> Extract peste User)
+    # 2. RESTAURARE COMPLETA (Daca exista backup)
     - name: Restaurare Profil
       shell: powershell
       run: |
-        # Configurare MEGA
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
         try {
             mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
             
-            # Incercam sa descarcam arhiva completa
             Write-Host "Cautare backup pe MEGA..."
+            # Incercam descarcarea. Daca e prima rulare, va da o eroare in consola dar merge mai departe.
             mega-get /RDP_Full_Backup/FullProfile.7z C:\FullProfile.7z
             
             if (Test-Path "C:\FullProfile.7z") {
                 Write-Host "Backup gasit! Se dezarhiveaza..."
-                # Dezarhivam fortat peste userul curent (-aoa = overwrite all)
+                # Dezarhivam fortat peste userul curent
                 & "7z" x "C:\FullProfile.7z" -o"C:\Users\runneradmin\" -aoa -y
                 
-                # Mesaj Simplu Fara Emojis
                 $msg = @{ content = "RESTAURARE REUSITA! Profilul tau a fost incarcat." } | ConvertTo-Json
                 Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
             } else {
-                Write-Host "Nu exista backup inca (Prima rulare)."
+                Write-Host "Nu exista backup inca (Prima rulare). Se va crea unul in 10 minute."
             }
-        } catch { Write-Host "Eroare la restaurare sau prima rulare." }
+        } catch { Write-Host "Eroare neasteptata la restaurare (ignorata)." }
 
-    # 3. LOOP BACKUP TOTAL (Arhivare User -> Upload)
+    # 3. LOOP BACKUP TOTAL (La fiecare 10 minute)
     - name: Loop Backup Total
       shell: powershell
       env:
@@ -72,27 +71,23 @@ jobs:
       run: |
         $count = 0
         while($count -lt 66) {
-            # Facem backup la fiecare 10 minute
+            # Asteptam 10 minute (600 secunde) intre salvari
             Start-Sleep -Seconds 600
             $count++
             
             try {
-                Write-Host "Incepere backup total nr. $count..."
-                
                 if (Test-Path "C:\FullProfile.7z") { Remove-Item "C:\FullProfile.7z" -Force }
                 
-                # Arhivare fara fisiere temporare
+                # Arhivare User (fara fisiere temporare inutile)
                 & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -xr!AppData\Local\Temp -xr!AppData\Local\Microsoft\Windows\INetCache -xr!AppData\Local\MEGAcmd
                 
                 mega-rm /RDP_Full_Backup/FullProfile.7z
-                
-                # Urcam arhiva noua (-c creeaza folderul daca nu e)
+                # Parametrul -c creeaza folderul daca nu exista
                 mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
                 
-                # Mesaj Simplu Fara Emojis
-                $alert = @{ content = "[BACKUP TOTAL] Salvarea nr. $count completa (Tot Userul)." } | ConvertTo-Json
+                $alert = @{ content = "[BACKUP TOTAL] Salvarea nr. $count completa." } | ConvertTo-Json
                 Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
                 
-            } catch { Write-Host "Eroare la backup (posibil fisier deschis)." }
+            } catch { Write-Host "Eroare la backup." }
         }
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
