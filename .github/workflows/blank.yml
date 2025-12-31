@@ -1,0 +1,121 @@
+name: Windows-RDP-Total-Sync-Clean-Restore
+
+on: 
+  workflow_dispatch:
+  repository_dispatch:
+    types: [restart_rdp]
+
+jobs:
+  build:
+    runs-on: windows-2019
+    permissions:
+      contents: write
+      actions: write
+    
+    steps:
+    - name: 1. Checkout Repo
+      uses: actions/checkout@v4
+
+    - name: 2. Instalare Utilitare (Chrome, MEGA, Tailscale)
+      run: |
+        choco install googlechrome megacmd tailscale -y
+
+    - name: 3. RESTAURARE TOTALĂ (Download Restore Point)
+      shell: powershell
+      run: |
+        # Localizare automata MEGAcmd si adaugare in PATH
+        $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if ($megaDir) { echo "$megaDir" >> $env:GITHUB_PATH }
+        
+        # Login la MEGA folosind Secrets
+        mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        
+        Write-Host "Se descarcă datele de pe MEGA pentru restaurare..."
+        # Descarcă folderele salvate (dacă nu există, MEGAcmd va trece peste fără eroare fatală)
+        mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
+        mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
+        
+        # Copiere Void.exe daca exista in repository
+        if (Test-Path "Void.exe") { Copy-Item "Void.exe" "C:\Users\runneradmin\Desktop\Void.exe" -Force }
+
+    - name: 4. Configurare RDP & Permisiuni Admin
+      run: |
+        # Activare Remote Desktop
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        # Setare Parola User
+        net user runneradmin ParolaRDP123!
+        # Prevenire Blocare Ecran (Full Access)
+        Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
+
+    - name: 5. Conectare Tailscale
+      shell: powershell
+      run: |
+        $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+        Start-Service tailscale
+        Start-Sleep -Seconds 5
+        & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
+        $myIp = (& $tsExe ip -4).Trim()
+        echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
+
+    - name: 6. Notificare Discord (Online Status)
+      shell: powershell
+      run: |
+        $webhookUrl = "${{ secrets.DISCORD_WEBHOOK }}"
+        $ip = "${{ env.IP_ADDRESS }}"
+        $msg = @{ content = "🚀 **RDP PERSISTENT ONLINE!** `n📍 IP: $ip `n👤 User: runneradmin `n🔑 Pass: ParolaRDP123! `n🛠 Status: Restaurare Desktop + AppData finalizată." } | ConvertTo-Json
+        Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $msg -ContentType "application/json"
+
+    - name: 7. APLICARE SETĂRI AUTOMATE (Wallpaper & Apps)
+      shell: powershell
+      run: |
+        # Setare Wallpaper daca exista wallpaper.jpg pe desktop
+        $wp = "C:\Users\runneradmin\Desktop\wallpaper.jpg"
+        if (Test-Path $wp) {
+            $c = @'
+            [DllImport("user32.dll", CharSet = CharSet.Auto)]
+            public static extern int SystemParametersInfo(int uAction, int uParam, string lvParam, int fuWinIni);
+'@
+            Add-Type -MemberDefinition $c -Name "Win32" -Namespace "Win32Functions"
+            [Win32Functions.Win32]::SystemParametersInfo(0x0014, 0, $wp, 0x01)
+        }
+        
+        # Lansare Chrome
+        Start-Process "chrome.exe" -ArgumentList "--no-sandbox"
+
+    - name: 8. LOOP SALVARE "CLEAN" (Ștergere vechi + Salvare nou)
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $count = 0
+        # Rulăm aproximativ 5 ore si 30 min (66 cicluri de 5 min)
+        while($count -lt 66) {
+            Start-Sleep -Seconds 300
+            $count++
+            
+            try { 
+                Write-Host "Ciclul $count: Se creează un punct de restaurare nou..."
+                
+                # Curățăm backup-ul vechi de pe MEGA pentru a avea o oglindă curată
+                mega-rm -r /RDP_Full_Backup/Desktop
+                mega-rm -r /RDP_Full_Backup/AppData
+                
+                # Încărcăm starea actuală
+                mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
+                mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+                
+                Write-Host "Sincronizare reușită."
+            } catch { 
+                Write-Host "Eroare temporară la sincronizare (posibil fișier blocat)." 
+            }
+        }
+        
+        # Salvare finală critică înainte de restart
+        mega-rm -r /RDP_Full_Backup/Desktop
+        mega-rm -r /RDP_Full_Backup/AppData
+        mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
+        mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+        
+        # Comanda de Auto-Restart (Trigger Repository Dispatch)
+        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
