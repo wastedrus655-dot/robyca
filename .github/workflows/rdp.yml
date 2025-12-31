@@ -1,35 +1,16 @@
 name: Windows-RDP-Total
 
-on: 
-  workflow_dispatch:
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-2019
-    permissions:
-      contents: write
-      actions: write
-    
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
     - name: Instalare Softuri
-      run: |
-        choco install googlechrome megacmd tailscale -y
-
-    - name: Restaurare Date
-      shell: powershell
-      run: |
-        # Configurare MEGA
-        $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-        if ($megaDir) { $env:PATH += ";$megaDir"; echo "$megaDir" >> $env:GITHUB_PATH }
-        
-        mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-        
-        Write-Host "Se descarcă backup-ul..."
-        mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
-        mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
+      run: choco install googlechrome megacmd tailscale -y
 
     - name: Configurare RDP
       run: |
@@ -38,7 +19,7 @@ jobs:
         net user runneradmin ParolaRDP123!
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
-    - name: Pornire Tailscale
+    - name: Tailscale
       shell: powershell
       run: |
         Start-Service tailscale
@@ -47,39 +28,38 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    - name: Notificare Discord
+    - name: Discord Notificare
       shell: powershell
       run: |
-        $msg = @{ content = "✅ RDP ONLINE! IP: ${{ env.IP_ADDRESS }}" } | ConvertTo-Json
+        $msg = @{ content = "RDP IP: ${{ env.IP_ADDRESS }}" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    - name: Configurare Finala
-      shell: powershell
-      run: |
-        $wp = "C:\Users\runneradmin\Desktop\wallpaper.jpg"
-        if (Test-Path $wp) {
-            $c = @'
-            [DllImport("user32.dll", CharSet = CharSet.Auto)]
-            public static extern int SystemParametersInfo(int uAction, int uParam, string lvParam, int fuWinIni);
-'@
-            Add-Type -MemberDefinition $c -Name "Win32" -Namespace "Win32Functions"
-            [Win32Functions.Win32]::SystemParametersInfo(0x0014, 0, $wp, 0x01)
-        }
-        Start-Process "chrome.exe" -ArgumentList "--no-sandbox"
-
-    - name: Loop Salvare
+    - name: Restaurare si Loop
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        # Configurare MEGA
+        $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if ($megaDir) { $env:PATH += ";$megaDir" }
+        
+        # Login MEGA (Daca crapa aici, inseamna ca nu ai pus secretele)
+        try {
+            mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+            mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
+            mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
+        } catch { Write-Host "Nu s-a putut conecta la MEGA. Verifică parola." }
+
+        # Loop infinit (5 ore)
         $count = 0
         while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
-            try { 
+            try {
                 mega-rm -r /RDP_Full_Backup/Desktop
                 mega-rm -r /RDP_Full_Backup/AppData
                 mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
                 mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
-            } catch { Write-Host "Skip" }
+            } catch { Write-Host "Sync skip" }
         }
+        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
