@@ -47,28 +47,27 @@ jobs:
         try {
             mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
             
-            # Creare folder daca nu exista
-            try { mega-mkdir /RDP_Full_Backup } catch { Write-Host "Folder existent" }
-
-            # Restaurare initiala
+            # Incercam restaurarea (va da eroare la prima rulare, e ok, o ignoram)
             mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
             mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
         } catch { Write-Host "Mega skip initial" }
 
-        # --- LOOP INFINIT CU NOTIFICARI ---
+        # --- LOOP INFINIT ---
         $count = 0
         while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
             try {
-                # Stergere si Urcare (Backup)
+                # Stergere vechituri
                 mega-rm -r /RDP_Full_Backup/Desktop
                 mega-rm -r /RDP_Full_Backup/AppData
-                mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
-                mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
                 
-                # --- AICI ESTE NOTIFICAREA NOUA (din 5 in 5 minute) ---
-                $alert = @{ content = "[BACKUP] Salvarea nr. $count a fost efectuata cu succes pe MEGA." } | ConvertTo-Json
+                # --- FIX FINAL: Am adaugat "-c" care FORTEAZA crearea folderelor ---
+                mega-put -c C:\Users\runneradmin\Desktop /RDP_Full_Backup/
+                mega-put -c C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+                
+                # Notificare Discord
+                $alert = @{ content = "[BACKUP] Salvarea nr. $count a fost efectuata cu succes." } | ConvertTo-Json
                 Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
                 
             } catch { Write-Host "Sync skip" }
