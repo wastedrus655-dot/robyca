@@ -11,37 +11,31 @@ jobs:
     permissions:
       contents: write
       actions: write
-    
     steps:
-    - name: 1. Checkout
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: 2. Instalare Nucleu
+    - name: Instalare Softuri
       run: |
         choco install googlechrome megacmd tailscale -y
 
-    - name: 3. Restaurare Date (Restore Point)
+    - name: Restaurare Date
       shell: powershell
       run: |
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir"; echo "$megaDir" >> $env:GITHUB_PATH }
-        
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-        
-        Write-Host "Descarcare backup..."
         mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
         mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
-        
-        if (Test-Path "Void.exe") { Copy-Item "Void.exe" "C:\Users\runneradmin\Desktop\Void.exe" -Force }
 
-    - name: 4. Configurare Windows & RDP
+    - name: Configurare RDP
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         net user runneradmin ParolaRDP123!
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
-    - name: 5. Tailscale
+    - name: Tailscale
       shell: powershell
       run: |
         Start-Service tailscale
@@ -50,14 +44,16 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    - name: 6. Notificare Discord
+    - name: Discord
       shell: powershell
       run: |
-        $msg = @{ content = "🚀 RDP Online! IP: ${{ env.IP_ADDRESS }} | User: runneradmin | Pass: ParolaRDP123!" } | ConvertTo-Json
+        $msg = @{ content = "🚀 RDP Online! IP: ${{ env.IP_ADDRESS }}" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    - name: 7. Aplicare Wallpaper
+    - name: Wallpaper si Loop Salvare
       shell: powershell
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         $wp = "C:\Users\runneradmin\Desktop\wallpaper.jpg"
         if (Test-Path $wp) {
@@ -68,24 +64,15 @@ jobs:
             Add-Type -MemberDefinition $c -Name "Win32" -Namespace "Win32Functions"
             [Win32Functions.Win32]::SystemParametersInfo(0x0014, 0, $wp, 0x01)
         }
-        Start-Process "chrome.exe" -ArgumentList "--no-sandbox"
-
-    - name: 8. Loop Salvare Oglinda (Restore Point)
-      shell: powershell
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
         $count = 0
         while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
             try { 
-                # Stergere backup vechi si salvare cel nou (Oglinda curata)
                 mega-rm -r /RDP_Full_Backup/Desktop
                 mega-rm -r /RDP_Full_Backup/AppData
                 mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
                 mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
-                Write-Host "Sincronizare reusita ($count)"
-            } catch { Write-Host "Sync error" }
+            } catch { Write-Host "Sync skip" }
         }
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
