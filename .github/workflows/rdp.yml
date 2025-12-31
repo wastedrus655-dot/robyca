@@ -1,4 +1,4 @@
-name: Windows-RDP-Full-Profile
+name: Windows-RDP-Final-V2
 
 on: [workflow_dispatch]
 
@@ -9,7 +9,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    # 1. Instalam 7zip si unelte necesare
+    # 1. Instalam 7zip si unelte
     - name: Instalare Softuri
       run: choco install googlechrome megacmd tailscale 7zip -y
 
@@ -17,7 +17,7 @@ jobs:
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        # Parola simpla ca sa nu avem probleme la login
+        # Parola simpla: Start123
         net user runneradmin Start123
         Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
@@ -30,38 +30,48 @@ jobs:
         $myIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    # NOTIFICARE START (Text simplu, fara emojis)
+    # Notificare Discord (Fara Emojis ca sa nu dea eroare JSON)
     - name: Discord Notificare
       shell: powershell
       run: |
-        $msg = @{ content = "RDP ONLINE! `nSe incearca restaurarea profilului... `nIP: ${{ env.IP_ADDRESS }} `nPass: Start123" } | ConvertTo-Json
+        $msg = @{ content = "RDP ONLINE! `nSe verifica existenta backup-ului... `nIP: ${{ env.IP_ADDRESS }} `nPass: Start123" } | ConvertTo-Json
         Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    # 2. RESTAURARE COMPLETA (Daca exista backup)
+    # 2. RESTAURARE (CU PROTECTIE ANTI-CRASH)
     - name: Restaurare Profil
       shell: powershell
       run: |
+        # Configurare MEGA in Path
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         if ($megaDir) { $env:PATH += ";$megaDir" }
         
+        # Login
+        try { mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }} } catch { Write-Host "Login error/Already logged in" }
+
+        Write-Host "Incercare descarcare backup..."
+        
+        # --- SECTIUNEA ANTI-CRASH ---
+        # Folosim un truc: Daca mega-get da eroare, prindem eroarea si nu lasam GitHub sa inchida serverul
         try {
-            mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-            
-            Write-Host "Cautare backup pe MEGA..."
-            # Incercam descarcarea. Daca e prima rulare, va da o eroare in consola dar merge mai departe.
             mega-get /RDP_Full_Backup/FullProfile.7z C:\FullProfile.7z
+        } catch {
+            Write-Host "Comanda mega-get a dat o eroare, dar continuam."
+        }
+
+        # Verificam manual daca fisierul a aparut
+        if (Test-Path "C:\FullProfile.7z") {
+            Write-Host "Backup gasit! Se dezarhiveaza..."
+            & "7z" x "C:\FullProfile.7z" -o"C:\Users\runneradmin\" -aoa -y
             
-            if (Test-Path "C:\FullProfile.7z") {
-                Write-Host "Backup gasit! Se dezarhiveaza..."
-                # Dezarhivam fortat peste userul curent
-                & "7z" x "C:\FullProfile.7z" -o"C:\Users\runneradmin\" -aoa -y
-                
-                $msg = @{ content = "RESTAURARE REUSITA! Profilul tau a fost incarcat." } | ConvertTo-Json
-                Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
-            } else {
-                Write-Host "Nu exista backup inca (Prima rulare). Se va crea unul in 10 minute."
-            }
-        } catch { Write-Host "Eroare neasteptata la restaurare (ignorata)." }
+            $msg = @{ content = "RESTAURARE REUSITA! Profilul tau a fost incarcat." } | ConvertTo-Json
+            Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
+        } else {
+            Write-Host "NU EXISTA BACKUP INCA. E ok, mergem mai departe!"
+        }
+
+        # FORTAM SUCCESUL: Spunem GitHub-ului ca totul e bine (Exit Code 0)
+        $global:LastExitCode = 0
+        exit 0
 
     # 3. LOOP BACKUP TOTAL (La fiecare 10 minute)
     - name: Loop Backup Total
@@ -70,24 +80,25 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         $count = 0
-        while($count -lt 66) {
-            # Asteptam 10 minute (600 secunde) intre salvari
+        while($count -lt 300) {
+            # Asteptam 10 minute (600 secunde)
             Start-Sleep -Seconds 600
             $count++
             
             try {
                 if (Test-Path "C:\FullProfile.7z") { Remove-Item "C:\FullProfile.7z" -Force }
                 
-                # Arhivare User (fara fisiere temporare inutile)
+                # Arhivam Userul (fara fisiere Temp inutile)
                 & "7z" a "C:\FullProfile.7z" "C:\Users\runneradmin\*" -mx1 -xr!AppData\Local\Temp -xr!AppData\Local\Microsoft\Windows\INetCache -xr!AppData\Local\MEGAcmd
                 
+                # Stergem vechiul backup de pe MEGA
                 mega-rm /RDP_Full_Backup/FullProfile.7z
-                # Parametrul -c creeaza folderul daca nu exista
+                
+                # Urcam noul backup (-c creeaza folderul obligatoriu)
                 mega-put -c C:\FullProfile.7z /RDP_Full_Backup/
                 
                 $alert = @{ content = "[BACKUP TOTAL] Salvarea nr. $count completa." } | ConvertTo-Json
                 Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $alert -ContentType "application/json"
                 
-            } catch { Write-Host "Eroare la backup." }
+            } catch { Write-Host "Eroare temporara la backup..." }
         }
-        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
